@@ -1,0 +1,216 @@
+---
+title: "Assignment 10"
+author: "Muhammad Ahmad,301297154 "
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+list.of.packages <- c("tidyverse", "lubridate", "modelr", "leaps", "rpart", "rpart.plot", "randomForest", "tree")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+library(tidyverse)
+library(lubridate)
+library(modelr)
+library(leaps)
+library(rpart)
+library(tree)
+library(rpart.plot)
+library(randomForest)
+
+```
+
+# Question 1
+
+A. Using the solutions from Assignment 9,  apply the same code to a new variable `PropertyCrime` that is equal to the `BreakAndEnter` crime category plus the `Theft` crime category to obtain the training error and test error for the best linear model to predict property crime. 
+
+
+B. Following the lecture notes (*L10 - Regression trees and forests*), use the `rpart` and `rpart.plot` packages and associated functions to create a regression tree for the model with `PropertyCrime` as the dependent variable and all the possible independent variables from the A9 solutions (the `max_X` vector). Plot the tree varying the "Complexity Parameter" (cp) to see how different values affect the look of your tree. 
+
+C. Now, find the optimal pruning of the regression tree based on the cp value. Display the cp table using the `printcp()` function and then visualize the results with `plotcp()`. Finally, plot the pruned tree based on the complexity parameter associated with the smallest cross-validated error (this is the cp that minimizes the `xerror`). *You can use the regression tree example on this site (https://www.statmethods.net/advstats/cart.html) to help you with this pruning. Once you've found the optimal `cp`, calculate the MSE test error applying this tree model to your test data. 
+
+D. Finally, use the `randomForest` package as we did in the lecture notes to calculate the test error from a random forest model and compare with the test error from part A and C. Which method achieves the smallest test error rate? 
+E. Apply all three models to the third dataset, `cwp_3` with crime only in 2017. Which model does the best in terms of minimizing the average squared residuals on this "cross-validation" dataset? 
+
+#A
+```{r}
+# The code used has been taken from assignment 9 solutions on canvas and last years assignment 10.
+
+setwd("C:/Users/Muhammad/Projects/A10")
+weather <- read_csv("vancouver_daily_weather.csv") %>%
+  select(date, avg_hourly_temperature, avg_hourly_relative_humidity, avg_hourly_wind_speed, avg_hourly_pressure_sea, avg_hourly_visibility, precipitation) %>% 
+  filter(between(date, as.Date("2003-01-01"), as.Date("2017-12-31")))
+
+weather <- weather %>% 
+  mutate(avg_hourly_temperature = parse_number(avg_hourly_temperature))
+
+pollution <- read_csv("vancouver_daily_pollution.csv") 
+
+pollution$date <- as.Date(with(pollution, paste(year, month, day,sep="-")), "%Y-%m-%d")
+
+
+
+crime <- read_csv("vancouver_daily_crime.csv") %>% 
+  filter(between(date, as.Date("2003-01-01"), as.Date("2017-12-31")))
+
+cw <- inner_join(weather, crime, by = "date") 
+
+cwp <- inner_join(cw,pollution, by="date")
+
+cwp <- cwp %>%
+  mutate(day_of_wk=as.factor(wday(date)), month=as.factor(month(date)))%>% 
+mutate(PropertyCrime=BreakAndEnter+Theft)
+
+
+cwp_short <- cwp %>%
+  filter(date < as.Date("2017-01-01"))
+
+set.seed(61580)
+
+rows <- sample(nrow(cwp_short ))
+cwp_short  <- cwp_short [rows, ]
+
+n_obs <- nrow(cwp_short)
+cwp_1 <- cwp_short[1:floor(n_obs/2),]
+cwp_2 <- cwp_short[(floor(n_obs/2)+1):n_obs,]
+cwp_3 <- cwp %>%
+  filter(date >= as.Date("2017-01-01"))
+
+
+gen_formula <- function(y_name,X_names){
+  as.formula(
+    paste(y_name,"~", 
+          paste(X_names, collapse = " + "))
+  )
+}
+error_rates <- function(X_name , dataset_1 , dataset_2 , dep_var_name )
+  {
+  
+  reg_results <- lm(gen_formula( dep_var_name , X_name ),
+                    data = dataset_1)
+  
+  df_training <- dataset_1 %>% 
+    add_residuals(reg_results) %>%
+    summarize( error_rate = mean(resid^2))
+  training_error <- df_training[1,1]
+  
+  df_test <- dataset_2 %>% 
+    add_residuals(reg_results) %>%
+    summarize( error_rate = mean(resid^2))
+  test_error <- df_test[1,1]
+  
+  k <- length(X_name)
+  
+  return(c( k , training_error , test_error ))
+}
+name_from_bin <- function(b,vars){
+  return(vars[as.logical(b)])
+}
+
+all_models <- function(variables){
+  K <- length(variables)
+  
+
+  bin_vec <- rep(list(0:1),K)
+  
+
+  bin_mat <- expand.grid(bin_vec)[-1,]
+  
+  list_of_RHS <- list()
+  
+  for(i in 1:nrow(bin_mat)){
+    list_of_RHS[[i]] <- name_from_bin(bin_mat[i,],variables)
+  }
+  
+  return(list_of_RHS)
+}
+colnames(cwp_1)
+max_X <- colnames(cwp_1)[c(2:7,11,12,14:17)]
+max_X
+
+all_subset_regression <- function(variables_to_consider , dataset_1 , dataset_2 , dep_var){
+  
+  models_to_consider <- all_models(variables_to_consider)
+  results <- map(models_to_consider,error_rates,dataset_1 , dataset_2 , dep_var)
+  useful_results <- matrix(unlist(results), ncol = 3, byrow = TRUE)
+  useful_results <- as_tibble(useful_results)
+  names(useful_results) <- c("num_vars","training_error","test_error")
+  
+  return(useful_results)
+}
+
+performances <- all_subset_regression(max_X , cwp_1 , cwp_2 , "PropertyCrime")
+which(performances$test_error == min(performances$test_error))
+which.min(performances$test_error)
+
+performances[4047,]
+all_models(max_X)[[4047]]
+best_combi <- all_models(max_X)[[4047]]
+final_model <- lm (gen_formula("PropertyCrime",best_combi),data = cwp_2)
+cwp_2 <- cwp_2 %>% add_residuals(final_model, var = "resid_lm")
+formula <-formula(paste("PropertyCrime", "~",paste(max_X, collapse = "+")))
+formula
+
+```
+
+
+
+#B
+```{r}
+tree_model <- rpart(formula, data = cwp_1, cp = 0.001)
+rpart.plot(tree_model)
+tree_model <- rpart(formula, data = cwp_1, cp = 0.01)
+rpart.plot(tree_model)
+tree_model <- rpart(formula, data = cwp_1, cp = 0.1)
+rpart.plot(tree_model)
+tree_model <- rpart(formula, data = cwp_1, cp = 1)
+rpart.plot(tree_model)
+
+```
+
+
+
+#C
+```{r}
+tree_model <- rpart(formula, data = cwp_1)
+printcp(tree_model)
+plotcp(tree_model)
+opti_cp <- tree_model$cptable[which.min(tree_model$cptable[,"xerror"]),"CP"]
+
+opti_tree <- rpart(formula, data = cwp_1, cp = opti_cp)
+
+cwp_2 <- cwp_2 %>% add_residuals(opti_tree, var = "tree_resid")
+MSE1<-mean((cwp_2$tree_resid)^2)
+```
+#D
+```{r}
+#The forest method perfroms the best in this case, since we have a lot of data I would expect it to perform better than LM model, it has lowest error rate compared to other models. 
+
+forest_model <- randomForest(formula, data = cwp_1)
+cwp_2 <- cwp_2 %>% add_residuals(forest_model, var = "forest_resid")
+
+cwp_2%>% summarize(forest_error_rate = mean(forest_resid^2),
+                    tree_error_rate = mean(tree_resid^2),
+                    linear_error_rate =mean(resid_lm^2) )
+
+
+```
+
+
+
+
+#E
+```{r}
+#The LM minimizes the error rate the most when data from cwp_3 is taken, it might be because foresting does not perform well when we have samll data, (cwp_3 is just one year data). Hence, linear model performs much better.
+
+cwp_3 <- cwp_3 %>% add_residuals(final_model, var = "resid_lm")
+cwp_3 <- cwp_3 %>% add_residuals(forest_model, var = "forest_resid")
+cwp_3 <- cwp_3 %>% add_residuals(opti_tree, var = "tree_resid")
+
+cwp_3 %>% summarize(forest_error_rate = mean(forest_resid^2),
+                    tree_error_rate = mean(tree_resid^2),
+                    linear_error_rate =mean(resid_lm^2) )
+
+```
